@@ -37,6 +37,11 @@ export async function deleteSession(encodedProject: string, sessionId: string): 
   return invoke("delete_session", { encodedProject, sessionId });
 }
 
+/** Copy a session JSONL from a Windows-encoded dir to a WSL-encoded dir. */
+export async function copySessionToWsl(sourceEncoded: string, targetEncoded: string, sessionId: string): Promise<string> {
+  return invoke("copy_session_to_wsl", { sourceEncoded, targetEncoded, sessionId });
+}
+
 // Phase 2: Resume commands
 
 export async function resumeSession(

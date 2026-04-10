@@ -1,5 +1,6 @@
 import { createSignal, createMemo, For, Show, onMount, onCleanup } from "solid-js";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { LazyStore } from "@tauri-apps/plugin-store";
 import { createSortable, SortableProvider, transformStyle } from "@thisbeyond/solid-dnd";
 import { useApp } from "../../contexts/AppContext";
 import { SettingsPanel, showAnimations, showHotkeyHint } from "../SettingsPanel";
@@ -174,10 +175,14 @@ export function TopBar() {
   });
   const isNeonShinjuku = () => activeTheme() === "neon-shinjuku";
 
-  // Set always-on-top on mount + track focus via Tauri window events
+  // Set always-on-top on mount from persisted preference + track focus
   onMount(async () => {
     const win = getCurrentWebviewWindow();
-    await win.setAlwaysOnTop(true);
+    const store = new LazyStore("settings.json");
+    const savedOnTop = await store.get<boolean>("always_on_top");
+    const shouldBeOnTop = savedOnTop != null ? savedOnTop : true;
+    setAlwaysOnTop(shouldBeOnTop);
+    await win.setAlwaysOnTop(shouldBeOnTop);
 
     await win.onFocusChanged(({ payload: focused }) => {
       setAppFocused(focused);
@@ -193,6 +198,9 @@ export function TopBar() {
     const win = getCurrentWebviewWindow();
     await win.setAlwaysOnTop(next);
     setAlwaysOnTop(next);
+    const store = new LazyStore("settings.json");
+    await store.set("always_on_top", next);
+    await store.save();
   }
 
   // Confirm-kill state
@@ -334,6 +342,20 @@ export function TopBar() {
     if (!newName || newName === oldName) return;
     try {
       await renameSession(oldName, newName);
+      // Update persisted window names and pane assignments that reference the old session name
+      const store = new LazyStore("settings.json");
+      const windowNames = await store.get<Record<string, string>>("window_names") || {};
+      const updated: Record<string, string> = {};
+      for (const [key, val] of Object.entries(windowNames)) {
+        if (key.startsWith(`${oldName}|`)) {
+          updated[key.replace(`${oldName}|`, `${newName}|`)] = val;
+        } else {
+          updated[key] = val;
+        }
+      }
+      await store.set("window_names", updated);
+      await store.save();
+
       refreshTmuxState();
       if (state.selectedTmuxSession === oldName) {
         selectTmuxSession(newName);
@@ -391,6 +413,12 @@ export function TopBar() {
     if (!sess) return;
     try {
       await renameWindow(sess, windowIndex, newName);
+      // Persist window name for resurrect
+      const store = new LazyStore("settings.json");
+      const names = await store.get<Record<string, string>>("window_names") || {};
+      names[`${sess}|${windowIndex}`] = newName;
+      await store.set("window_names", names);
+      await store.save();
       refreshTmuxState();
     } catch (err) {
       console.error("[TopBar] rename window error:", err);

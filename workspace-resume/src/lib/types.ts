@@ -3,6 +3,7 @@ export interface ProjectInfo {
   actual_path: string;
   session_count: number;
   path_exists: boolean;
+  secondary_dirs: string[];
 }
 
 export interface SessionInfo {
@@ -12,6 +13,7 @@ export interface SessionInfo {
   last_user_message: string | null;
   is_corrupted: boolean;
   file_size_bytes: number;
+  source_dir: string | null;
 }
 
 // Phase 2: Resume types

@@ -1,12 +1,18 @@
 import { createSignal, For, Show } from "solid-js";
+import { LazyStore } from "@tauri-apps/plugin-store";
 import { useApp } from "../../contexts/AppContext";
 import {
   setupPaneGrid,
   setPaneAssignment,
-  tmuxResurrectRestore,
   listTmuxPanes,
+  listTmuxSessions,
+  createSession,
+  createWindow,
+  sendToPane,
+  getPaneAssignmentsRaw,
+  renameWindow,
 } from "../../lib/tauri-commands";
-import { launchToPane } from "../../lib/launch";
+import { toWslPath } from "../../lib/path";
 
 /** Fixed layout presets with dot-grid icons. */
 const FIXED_LAYOUTS = [
@@ -54,9 +60,13 @@ export function PanePresetPicker() {
     try {
       const newPaneCount = cols * rows;
       await setupPaneGrid(sess, win, cols, rows);
+      // Persist layout geometry for resurrect
+      const store = new LazyStore("settings.json");
+      const layouts = await store.get<Record<string, { cols: number; rows: number }>>("window_layouts") || {};
+      layouts[`${sess}|${win}`] = { cols, rows };
+      await store.set("window_layouts", layouts);
+      await store.save();
       // Only clear assignments for pane indices beyond the new grid size.
-      // New grids get sequential indices starting from 0, so any old
-      // assignment with index >= newPaneCount is stale.
       const staleKeys = Object.keys(state.paneAssignments).filter(
         (idx) => Number(idx) >= newPaneCount,
       );
@@ -71,18 +81,23 @@ export function PanePresetPicker() {
     }
   }
 
-  /** Gate layout changes that reduce pane count while Claude sessions are active. */
+  /** Gate layout changes that would remove panes with assignments or active processes. */
   function handleLayoutClick(cols: number, rows: number) {
     const newCount = cols * rows;
-    if (newCount < currentPaneCount()) {
-      // Check if any pane has an active Claude session
-      const hasActiveClaude = state.tmuxPanes.some(
-        (p) => p.current_command.toLowerCase().includes("claude"),
-      );
-      if (hasActiveClaude) {
-        setPendingGrid({ cols, rows });
-        return;
-      }
+    const current = currentPaneCount();
+    // Not actually reducing, or already at this size — proceed directly
+    if (newCount >= current) {
+      setGrid(cols, rows);
+      return;
+    }
+    // Reducing panes — check if any pane that would be removed has an assignment or active process
+    const hasActiveClaude = state.tmuxPanes.some(
+      (p) => p.current_command.toLowerCase().includes("claude"),
+    );
+    const hasAssignments = Object.keys(state.paneAssignments).length > 0;
+    if (hasActiveClaude || hasAssignments) {
+      setPendingGrid({ cols, rows });
+      return;
     }
     setGrid(cols, rows);
   }
@@ -114,18 +129,10 @@ export function PanePresetPicker() {
           onClick={async () => {
             setBusy(true);
             try {
-              await tmuxResurrectRestore();
-              refreshTmuxState();
-
-              // Wait for tmux to finish restoring panes
-              await new Promise((r) => setTimeout(r, 2000));
-
-              // Re-launch Claude sessions across ALL sessions+windows from saved assignments
-              // Keys are "session|window|pane" format — get all from the raw store
-              const { getPaneAssignmentsRaw } = await import("../../lib/tauri-commands");
+              // Read saved assignments from our own store (not tmux-resurrect)
               const allAssignments = await getPaneAssignmentsRaw();
 
-              // Group by session+window
+              // Group by session+window (skip legacy bare-index keys)
               const groups = new Map<string, { sess: string; win: number; panes: { idx: number; project: string }[] }>();
               for (const [key, encodedProject] of Object.entries(allAssignments)) {
                 const parts = key.split("|");
@@ -138,44 +145,99 @@ export function PanePresetPicker() {
                 groups.get(groupKey)!.panes.push({ idx: Number(paneStr), project: encodedProject });
               }
 
-              // Launch in each session+window
+              if (groups.size === 0) {
+                console.warn("[Resurrect] No saved assignments found");
+                return;
+              }
+
+              // Determine unique sessions and their windows (sorted)
+              const sessionWindows = new Map<string, number[]>();
               for (const group of groups.values()) {
-                let panes;
-                try {
-                  panes = await listTmuxPanes(group.sess, group.win);
-                } catch (e) {
-                  console.warn(`[Resurrect] window ${group.sess}:${group.win} not found, skipping`);
-                  continue;
+                if (!sessionWindows.has(group.sess)) sessionWindows.set(group.sess, []);
+                sessionWindows.get(group.sess)!.push(group.win);
+              }
+              for (const wins of sessionWindows.values()) wins.sort((a, b) => a - b);
+
+              // Load persisted window names and layout geometry
+              const store = new LazyStore("settings.json");
+              const windowNames = await store.get<Record<string, string>>("window_names") || {};
+              const windowLayouts = await store.get<Record<string, { cols: number; rows: number }>>("window_layouts") || {};
+
+              // Check existing sessions to avoid duplicates
+              const existingSessions = new Set((await listTmuxSessions()).map((s) => s.name));
+
+              // Create sessions and windows
+              for (const [sessName, windowIndices] of sessionWindows.entries()) {
+                if (!existingSessions.has(sessName)) {
+                  await createSession(sessName);
+                  console.log(`[Resurrect] Created session: ${sessName}`);
                 }
-                for (const { idx: paneIndex, project: encodedProject } of group.panes) {
-                  const project = state.projects.find((p) => p.encoded_name === encodedProject);
-                  if (!project) continue;
-                  const paneExists = panes.some((p) => p.pane_index === paneIndex);
-                  if (!paneExists) continue;
-                  try {
-                    await launchToPane({
-                      tmuxSession: group.sess,
-                      tmuxWindow: group.win,
-                      tmuxPanes: panes,
-                      paneAssignments: state.paneAssignments,
-                      encodedProject,
-                      projectPath: project.actual_path,
-                      boundSession: project.meta.bound_session,
-                      targetPaneIndex: paneIndex,
-                    });
-                  } catch (e) {
-                    console.error(`[Resurrect] failed to resume pane ${paneIndex} in ${group.sess}:${group.win}:`, e);
+                // Session creation gives us the first window. Create additional windows.
+                const maxWin = Math.max(...windowIndices);
+                for (let w = 2; w <= maxWin; w++) {
+                  await createWindow(sessName);
+                  console.log(`[Resurrect] Created window ${w} in ${sessName}`);
+                }
+
+                // Restore window names
+                for (const winIdx of windowIndices) {
+                  const savedName = windowNames[`${sessName}|${winIdx}`];
+                  if (savedName) {
+                    try {
+                      await renameWindow(sessName, winIdx, savedName);
+                      console.log(`[Resurrect] Renamed ${sessName}:${winIdx} → "${savedName}"`);
+                    } catch (_) {}
+                  }
+                }
+
+                // Set up pane grids (using persisted geometry or default 3x2)
+                for (const winIdx of windowIndices) {
+                  const layout = windowLayouts[`${sessName}|${winIdx}`] || { cols: 3, rows: 2 };
+                  const newPanes = await setupPaneGrid(sessName, winIdx, layout.cols, layout.rows);
+                  console.log(`[Resurrect] Set up ${layout.cols}x${layout.rows} grid in ${sessName}:${winIdx} — ${newPanes.length} panes`);
+
+                  // Sort new panes by visual position (top, then left)
+                  const sortedPanes = [...newPanes].sort((a, b) => a.top !== b.top ? a.top - b.top : a.left - b.left);
+
+                  // Get saved assignments for this window
+                  const group = groups.get(`${sessName}|${winIdx}`);
+                  if (!group) continue;
+
+                  // Sort saved pane indices to get visual order (1→pos0, 2→pos1, ..., 6→pos5)
+                  for (const { idx: savedIdx, project: encodedProject } of group.panes) {
+                    const project = state.projects.find((p) => p.encoded_name === encodedProject);
+                    if (!project) {
+                      console.warn(`[Resurrect] Project not found: ${encodedProject}, skipping`);
+                      continue;
+                    }
+
+                    // Map saved index to visual position (1-based → 0-based)
+                    const visualPos = savedIdx - 1;
+                    if (visualPos < 0 || visualPos >= sortedPanes.length) {
+                      console.warn(`[Resurrect] Pane index ${savedIdx} out of range for ${sessName}:${winIdx}`);
+                      continue;
+                    }
+
+                    const actualPaneIndex = sortedPanes[visualPos].pane_index;
+                    const wslPath = toWslPath(project.actual_path);
+
+                    // cd to project directory (NO claude launch)
+                    await sendToPane(sessName, winIdx, actualPaneIndex, `cd "${wslPath}"`);
+                    await setPaneAssignment(sessName, winIdx, actualPaneIndex, encodedProject);
+                    console.log(`[Resurrect] ${sessName}:${winIdx}.${actualPaneIndex} → ${project.actual_path.split(/[\\/]/).pop()}`);
                   }
                 }
               }
+
               refreshTmuxState();
+              console.log("[Resurrect] Workspace rebuilt. Resume Claude sessions manually.");
             } catch (e) {
-              console.error("[PanePresetPicker] resurrect restore error:", e);
+              console.error("[PanePresetPicker] resurrect rebuild error:", e);
             } finally {
               setBusy(false);
             }
           }}
-          title="Restore last saved tmux state"
+          title="Rebuild workspace from saved pane assignments (cd only, no Claude launch)"
         >
           Resurrect
         </button>

@@ -6,4 +6,6 @@ pub struct ProjectInfo {
     pub actual_path: String,
     pub session_count: usize,
     pub path_exists: bool,
+    #[serde(default)]
+    pub secondary_dirs: Vec<String>,
 }

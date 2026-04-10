@@ -137,7 +137,7 @@ Tasks:
 
 #### Portability Guards
 1. **Portability regression script** (`scripts/check-portability.ps1` or `.sh`)
-   - Grep for hardcoded usernames/paths (developer-specific paths, /mnt/c/Users/<name>, etc.)
+   - Grep for hardcoded usernames/paths (Sky, /mnt/c/Users/USERNAME, etc.)
    - Verify version numbers match across Cargo.toml, tauri.conf.json, package.json
    - Verify dev-only code is gated or removed (search for "DEV-ONLY", "dev_restart")
    - Verify app identifier is not generic placeholder

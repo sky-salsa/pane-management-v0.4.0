@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn test_build_uri_simple_path() {
         let uri = WarpLauncher::build_uri("C:/Users/USERNAME/Documents/project");
-        assert_eq!(uri, "warp://action/new_window?path=C%3A%2FUsers%2FSky%2FDocuments%2Fproject");
+        assert_eq!(uri, "warp://action/new_window?path=C%3A%2FUsers%2FUSERNAME%2FDocuments%2Fproject");
     }
 
     #[test]
@@ -242,7 +242,7 @@ mod tests {
         );
         // Pitfall 5: YAML cwd must use forward slashes
         assert!(yaml.contains("C:/Users/USERNAME/Documents/project"));
-        assert!(!yaml.contains("C:\\Users\\Sky"));
+        assert!(!yaml.contains("C:\\Users\\USERNAME"));
     }
 
     #[test]

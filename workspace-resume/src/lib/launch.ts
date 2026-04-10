@@ -114,6 +114,9 @@ export async function launchToPane(opts: {
   const yoloFlag = opts.yolo ? " --dangerously-skip-permissions" : "";
 
   // Determine which session ID to use: explicit > bound > most-recent
+  // After Windows/WSL project merge, the primary encoded_name is always -mnt-c-
+  // and claude_project_dirs contains the C-- dir. The copy-to-WSL modal in
+  // ProjectDetailModal handles the cross-environment case before we get here.
   let resumeId = opts.sessionId || opts.boundSession;
 
   if (!resumeId) {
@@ -126,6 +129,13 @@ export async function launchToPane(opts: {
     } catch (e) {
       console.warn("[launchToPane] failed to auto-resolve session:", e);
     }
+  }
+
+  // Safety net: if launching a C-- project that wasn't merged, don't try to
+  // resume a session WSL Claude can't find — start fresh instead
+  if (resumeId && opts.encodedProject.startsWith("C--")) {
+    console.warn(`[launchToPane] C-- project with resumeId — WSL may not find it, clearing`);
+    resumeId = null;
   }
 
   const claudeCmd = resumeId

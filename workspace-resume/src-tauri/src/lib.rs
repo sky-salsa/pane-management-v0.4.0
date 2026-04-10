@@ -21,6 +21,7 @@ pub fn run() {
             commands::discovery::open_directory,
             commands::discovery::get_inode,
             commands::discovery::find_inode_in_tree,
+            commands::discovery::copy_session_to_wsl,
             commands::discovery::dev_restart, // DEV-ONLY: remove before production
             commands::launcher::resume_session,
             commands::launcher::get_active_sessions,

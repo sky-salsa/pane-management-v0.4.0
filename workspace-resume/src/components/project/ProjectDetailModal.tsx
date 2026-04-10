@@ -1,6 +1,7 @@
 import { createSignal, createResource, For, Show, onMount, onCleanup } from "solid-js";
+import { LazyStore } from "@tauri-apps/plugin-store";
 import { useApp } from "../../contexts/AppContext";
-import { listSessions, setSessionBinding, deleteSession, openDirectory, setProjectTier, checkContinuityExists, sendToPane } from "../../lib/tauri-commands";
+import { listSessions, setSessionBinding, deleteSession, openDirectory, setProjectTier, checkContinuityExists, sendToPane, copySessionToWsl } from "../../lib/tauri-commands";
 import { launchToPane, newSessionInPane } from "../../lib/launch";
 import { toWslPath, deriveName } from "../../lib/path";
 import { relativeTime, formatDuration } from "../../lib/time";
@@ -35,11 +36,23 @@ export function ProjectDetailModal(props: Props) {
   const [editValue, setEditValue] = createSignal("");
   const [hasContinuity, setHasContinuity] = createSignal<boolean | null>(null);
 
-  // Load session rename data from localStorage + check Continuity
+  // Load session rename data from Tauri store + check Continuity
   onMount(async () => {
     try {
-      const stored = localStorage.getItem(`session-names:${props.project.encoded_name}`);
-      if (stored) setSessionNames(JSON.parse(stored));
+      const store = new LazyStore("settings.json");
+      const allNames = await store.get<Record<string, Record<string, string>>>("session_names") || {};
+      const stored = allNames[props.project.encoded_name];
+      if (stored) setSessionNames(stored);
+      // Migrate from localStorage if present (one-time)
+      const legacy = localStorage.getItem(`session-names:${props.project.encoded_name}`);
+      if (legacy && !stored) {
+        const parsed = JSON.parse(legacy);
+        setSessionNames(parsed);
+        allNames[props.project.encoded_name] = parsed;
+        await store.set("session_names", allNames);
+        await store.save();
+        localStorage.removeItem(`session-names:${props.project.encoded_name}`);
+      }
     } catch { /* ignore */ }
     try {
       const exists = await checkContinuityExists(props.project.actual_path);
@@ -47,12 +60,15 @@ export function ProjectDetailModal(props: Props) {
     } catch { /* ignore */ }
   });
 
-  function saveSessionNames(names: Record<string, string>) {
+  async function saveSessionNames(names: Record<string, string>) {
     setSessionNames(names);
-    localStorage.setItem(
-      `session-names:${props.project.encoded_name}`,
-      JSON.stringify(names),
-    );
+    try {
+      const store = new LazyStore("settings.json");
+      const allNames = await store.get<Record<string, Record<string, string>>>("session_names") || {};
+      allNames[props.project.encoded_name] = names;
+      await store.set("session_names", allNames);
+      await store.save();
+    } catch { /* ignore */ }
   }
 
   // Load sessions — from all linked Claude Code directories if renamed
@@ -220,8 +236,49 @@ export function ProjectDetailModal(props: Props) {
     }
   }
 
-  // Resume specific session
+  // Windows session helpers
+  function isWindowsSession(session: SessionInfo): boolean {
+    return session.source_dir?.startsWith("C--") ?? false;
+  }
+  function sessionExistsInPrimary(session: SessionInfo): boolean {
+    if (!session.source_dir || session.source_dir === project().encoded_name) return true;
+    return sessions()?.some(
+      (s) => s.session_id === session.session_id && s.source_dir === project().encoded_name
+    ) ?? false;
+  }
+
+  // Copy-to-WSL modal state
+  const [copyModalSession, setCopyModalSession] = createSignal<SessionInfo | null>(null);
+  const [copyModalResumeAfter, setCopyModalResumeAfter] = createSignal(false);
+  const [copying, setCopying] = createSignal(false);
+
+  async function handleCopyToWsl(resumeAfter: boolean) {
+    const session = copyModalSession();
+    if (!session || !session.source_dir) return;
+    setCopying(true);
+    try {
+      await copySessionToWsl(session.source_dir, project().encoded_name, session.session_id);
+      setCopyModalSession(null);
+      refetch(); // refresh session list
+      if (resumeAfter) {
+        launchOrPick({ mode: "resume", sessionId: session.session_id });
+      }
+    } catch (e) {
+      console.error("[CopyToWSL] error:", e);
+      alert(`Copy failed: ${e}`);
+    } finally {
+      setCopying(false);
+    }
+  }
+
+  // Resume specific session — intercept Windows-only sessions
   function handleResume(sessionId: string) {
+    const session = sessions()?.find((s) => s.session_id === sessionId);
+    if (session && isWindowsSession(session) && !sessionExistsInPrimary(session)) {
+      setCopyModalSession(session);
+      setCopyModalResumeAfter(true);
+      return;
+    }
     launchOrPick({ mode: "resume", sessionId });
   }
 
@@ -372,6 +429,9 @@ export function ProjectDetailModal(props: Props) {
                       <Show when={session.is_corrupted}>
                         <span class="modal-session-corrupted-tag">corrupted</span>
                       </Show>
+                      <Show when={isWindowsSession(session)}>
+                        <span class="modal-session-windows-tag">Windows</span>
+                      </Show>
                     </div>
 
                     <div class="modal-session-meta">
@@ -387,13 +447,25 @@ export function ProjectDetailModal(props: Props) {
                     </Show>
 
                     <div class="modal-session-actions">
-                      <button
-                        class="modal-btn primary"
-                        disabled={session.is_corrupted}
-                        onClick={() => handleResume(session.session_id)}
+                      <Show
+                        when={!isWindowsSession(session) || sessionExistsInPrimary(session)}
+                        fallback={
+                          <button
+                            class="modal-btn primary"
+                            onClick={() => { setCopyModalSession(session); setCopyModalResumeAfter(true); }}
+                          >
+                            Copy to WSL
+                          </button>
+                        }
                       >
-                        Resume
-                      </button>
+                        <button
+                          class="modal-btn primary"
+                          disabled={session.is_corrupted}
+                          onClick={() => handleResume(session.session_id)}
+                        >
+                          Resume
+                        </button>
+                      </Show>
                       <button
                         class={`modal-btn ${project().meta.bound_session === session.session_id ? "active" : ""}`}
                         onClick={() => handleBind(session.session_id)}
@@ -453,6 +525,32 @@ export function ProjectDetailModal(props: Props) {
           </Show>
         </div>
       </div>
+
+      {/* Copy-to-WSL confirmation modal */}
+      <Show when={copyModalSession()}>
+        <div class="modal-backdrop" onClick={() => setCopyModalSession(null)}>
+          <div class="confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <p class="confirm-message">
+              <strong>This session only exists in the Windows file system.</strong>
+            </p>
+            <p class="confirm-warning">
+              Copying creates an independent snapshot. Changes will not sync between the Windows and WSL copies. The original Windows session will remain untouched.
+            </p>
+            <div class="confirm-actions">
+              <button class="modal-btn" onClick={() => setCopyModalSession(null)}>
+                Cancel
+              </button>
+              <button
+                class="modal-btn primary"
+                disabled={copying()}
+                onClick={() => handleCopyToWsl(copyModalResumeAfter())}
+              >
+                {copying() ? "Copying..." : copyModalResumeAfter() ? "Copy & Resume" : "Copy to WSL"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Show>
     </div>
   );
 }

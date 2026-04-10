@@ -35,13 +35,6 @@ pub async fn list_projects() -> Result<Vec<ProjectInfo>, String> {
 
         let encoded_name = entry.file_name().to_string_lossy().to_string();
 
-        // Only discover WSL-encoded paths (-mnt-c- prefix).
-        // Windows-encoded paths (C-- prefix) stay on disk but are hidden from the UI.
-        // This avoids duplicates after session migration from Windows to WSL.
-        if !encoded_name.starts_with("-mnt-c-") {
-            continue;
-        }
-
         // Count .jsonl files and find the most recently modified one
         let mut session_count = 0usize;
         let mut latest_modified = std::time::SystemTime::UNIX_EPOCH;
@@ -76,14 +69,63 @@ pub async fn list_projects() -> Result<Vec<ProjectInfo>, String> {
             actual_path,
             session_count,
             path_exists,
+            secondary_dirs: vec![],
         }, latest_modified));
     }
 
+    // Deduplicate: group projects by normalized actual_path so C-- and -mnt-c-
+    // variants of the same real directory merge into one project.
+    let mut path_groups: std::collections::HashMap<String, Vec<(ProjectInfo, std::time::SystemTime)>> =
+        std::collections::HashMap::new();
+    for item in projects {
+        let key = normalize_path_for_dedup(&item.0.actual_path);
+        path_groups.entry(key).or_default().push(item);
+    }
+
+    let mut deduped: Vec<(ProjectInfo, std::time::SystemTime)> = Vec::new();
+    for (_norm_path, mut group) in path_groups {
+        if group.len() == 1 {
+            let (mut p, ts) = group.remove(0);
+            p.secondary_dirs = vec![];
+            deduped.push((p, ts));
+            continue;
+        }
+        // Multiple encoded dirs for the same actual_path.
+        // -mnt-c- (WSL) is primary, C-- (Windows) is secondary.
+        group.sort_by(|a, b| {
+            let a_wsl = a.0.encoded_name.starts_with("-mnt-c-");
+            let b_wsl = b.0.encoded_name.starts_with("-mnt-c-");
+            b_wsl.cmp(&a_wsl) // WSL first
+        });
+        let (mut primary, mut latest_ts) = group.remove(0);
+        let mut secondary_dirs = Vec::new();
+        for (secondary, sec_ts) in group {
+            secondary_dirs.push(secondary.encoded_name);
+            primary.session_count += secondary.session_count;
+            if sec_ts > latest_ts {
+                latest_ts = sec_ts;
+            }
+        }
+        primary.secondary_dirs = secondary_dirs;
+        deduped.push((primary, latest_ts));
+    }
+
     // Sort by most recently modified session file (newest first)
-    projects.sort_by(|a, b| b.1.cmp(&a.1));
-    let projects: Vec<ProjectInfo> = projects.into_iter().map(|(p, _)| p).collect();
+    deduped.sort_by(|a, b| b.1.cmp(&a.1));
+    let projects: Vec<ProjectInfo> = deduped.into_iter().map(|(p, _)| p).collect();
 
     Ok(projects)
+}
+
+/// Normalize a path for dedup comparison: convert /mnt/c/... to C:\... format.
+/// Both branches lowercase for case-insensitive matching.
+fn normalize_path_for_dedup(path: &str) -> String {
+    if path.starts_with("/mnt/") && path.len() > 6 && path.as_bytes()[5].is_ascii_alphabetic() {
+        let drive = path.as_bytes()[5].to_ascii_uppercase() as char;
+        let rest = if path.len() > 6 { &path[6..] } else { "" };
+        return format!("{}:{}", drive, rest.replace('/', "\\")).to_lowercase();
+    }
+    path.to_lowercase().replace('/', "\\")
 }
 
 #[tauri::command]
@@ -139,6 +181,7 @@ pub async fn list_sessions(encoded_project: String) -> Result<Vec<SessionInfo>, 
                     last_user_message: meta.last_user_message,
                     is_corrupted: meta.is_corrupted,
                     file_size_bytes,
+                    source_dir: Some(encoded_project.clone()),
                 });
             }
             Err(e) => {
@@ -150,6 +193,7 @@ pub async fn list_sessions(encoded_project: String) -> Result<Vec<SessionInfo>, 
                     last_user_message: None,
                     is_corrupted: true,
                     file_size_bytes,
+                    source_dir: Some(encoded_project.clone()),
                 });
             }
         }
@@ -285,6 +329,68 @@ pub async fn find_inode_in_tree(
     } else {
         Ok(Some(stdout))
     }
+}
+
+/// Copy a session JSONL file from a Windows-encoded project directory to the
+/// WSL-encoded counterpart. Creates the target directory if needed.
+/// This is a one-time snapshot — the two copies are independent after this.
+#[tauri::command]
+pub async fn copy_session_to_wsl(
+    source_encoded: String,
+    target_encoded: String,
+    session_id: String,
+) -> Result<String, String> {
+    let projects_dir = dirs::home_dir()
+        .ok_or("Cannot find home directory")?
+        .join(".claude")
+        .join("projects");
+
+    let source_file = projects_dir
+        .join(&source_encoded)
+        .join(format!("{}.jsonl", session_id));
+
+    if !source_file.exists() {
+        return Err(format!("Source session file not found: {}/{}", source_encoded, session_id));
+    }
+
+    let target_dir = projects_dir.join(&target_encoded);
+    if !target_dir.exists() {
+        std::fs::create_dir_all(&target_dir)
+            .map_err(|e| format!("Failed to create target directory: {}", e))?;
+    }
+
+    let target_file = target_dir.join(format!("{}.jsonl", session_id));
+    if target_file.exists() {
+        return Err("Session already exists in WSL directory".to_string());
+    }
+
+    std::fs::copy(&source_file, &target_file)
+        .map_err(|e| format!("Failed to copy session file: {}", e))?;
+
+    // Also copy the session subdirectory (subagent transcripts) if it exists
+    let source_subdir = projects_dir.join(&source_encoded).join(&session_id);
+    if source_subdir.is_dir() {
+        let target_subdir = target_dir.join(&session_id);
+        copy_dir_recursive(&source_subdir, &target_subdir)
+            .map_err(|e| format!("Failed to copy session subdirectory: {}", e))?;
+    }
+
+    Ok(target_encoded)
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), &dst_path)?;
+        }
+    }
+    Ok(())
 }
 
 /// DEV-ONLY: Hard exit so the dev loop script relaunches the app.

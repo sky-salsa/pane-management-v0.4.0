@@ -158,6 +158,27 @@ export function AppProvider(props: { children: JSX.Element }) {
   }
 
   /**
+   * Auto-merge Windows (C--) and WSL (-mnt-c-) project directory pairs.
+   * When list_projects deduplicates, the primary (-mnt-c-) project gets
+   * secondary_dirs listing the C-- counterpart. We save those into
+   * claude_project_dirs so the umbrella session loader picks up both.
+   */
+  async function mergeWindowsWslProjects() {
+    for (const project of state.projects) {
+      const secondaryDirs = (project as any).secondary_dirs as string[] | undefined;
+      if (!secondaryDirs || secondaryDirs.length === 0) continue;
+
+      const existingDirs = project.meta.claude_project_dirs ?? [];
+      const allDirs = [...new Set([...existingDirs, ...secondaryDirs])];
+
+      if (allDirs.length !== existingDirs.length || !allDirs.every((d) => existingDirs.includes(d))) {
+        await updateProjectInode(project.encoded_name, project.meta.inode ?? null, allDirs);
+        console.log(`[merge] Linked Windows dirs for ${project.encoded_name}:`, secondaryDirs);
+      }
+    }
+  }
+
+  /**
    * F-61: Backfill inodes for projects that don't have them yet,
    * and scan for orphaned projects (path_exists=false) to re-link.
    * Runs once after initial project load.
@@ -664,6 +685,9 @@ export function AppProvider(props: { children: JSX.Element }) {
       loadSessionOrder(),
       loadPinnedOrder(),
     ]);
+
+    // Auto-merge Windows (C--) and WSL (-mnt-c-) project pairs via claude_project_dirs
+    mergeWindowsWslProjects();
 
     // F-61: Backfill inodes + scan for orphaned projects (runs in background)
     reconcileProjectInodes();

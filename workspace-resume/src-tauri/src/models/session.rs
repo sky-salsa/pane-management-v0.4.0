@@ -8,4 +8,5 @@ pub struct SessionInfo {
     pub last_user_message: Option<String>,
     pub is_corrupted: bool,
     pub file_size_bytes: u64,
+    pub source_dir: Option<String>,
 }

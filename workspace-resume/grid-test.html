@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+<head>
+<style>
+/* Exact copy of .pane-grid from index.css */
+.pane-grid {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  flex: 1;
+  min-height: 140px;
+}
+.pane-slot {
+  background: #16162a;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  padding: 28px 12px 12px;
+  min-height: 90px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  color: white;
+  font-family: monospace;
+}
+body { background: #1a1a2e; margin: 20px; }
+h2 { color: white; font-family: sans-serif; }
+</style>
+</head>
+<body>
+
+<h2>Test 1: Inline style with kebab-case (SolidJS approach)</h2>
+<div class="pane-grid" style="grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr;">
+  <div class="pane-slot">Pane 0</div>
+  <div class="pane-slot">Pane 1</div>
+  <div class="pane-slot">Pane 2</div>
+  <div class="pane-slot">Pane 3</div>
+  <div class="pane-slot">Pane 4</div>
+  <div class="pane-slot">Pane 5</div>
+</div>
+
+<h2>Test 2: No inline style (CSS grid defaults)</h2>
+<div class="pane-grid">
+  <div class="pane-slot">Pane 0</div>
+  <div class="pane-slot">Pane 1</div>
+  <div class="pane-slot">Pane 2</div>
+  <div class="pane-slot">Pane 3</div>
+  <div class="pane-slot">Pane 4</div>
+  <div class="pane-slot">Pane 5</div>
+</div>
+
+<script>
+// Simulate SolidJS setProperty approach
+const test3 = document.createElement('div');
+test3.className = 'pane-grid';
+test3.style.setProperty('grid-template-columns', '1fr 1fr 1fr');
+test3.style.setProperty('grid-template-rows', '1fr 1fr');
+for (let i = 0; i < 6; i++) {
+  const slot = document.createElement('div');
+  slot.className = 'pane-slot';
+  slot.textContent = `Pane ${i}`;
+  test3.appendChild(slot);
+}
+const h = document.createElement('h2');
+h.textContent = 'Test 3: setProperty approach (what SolidJS actually does)';
+h.style.color = 'white';
+h.style.fontFamily = 'sans-serif';
+document.body.appendChild(h);
+document.body.appendChild(test3);
+
+// Log computed styles
+document.querySelectorAll('.pane-grid').forEach((el, idx) => {
+  const cs = getComputedStyle(el);
+  console.log(`Grid ${idx}:`, {
+    inlineStyle: el.getAttribute('style'),
+    computedCols: cs.getPropertyValue('grid-template-columns'),
+    computedRows: cs.getPropertyValue('grid-template-rows'),
+    width: el.offsetWidth,
+    childCount: el.children.length,
+  });
+});
+</script>
+</body>
+</html>

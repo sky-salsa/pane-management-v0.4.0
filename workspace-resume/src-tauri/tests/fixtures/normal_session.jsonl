@@ -1,0 +1,6 @@
+{"type":"user","timestamp":"2026-03-20T10:00:00Z","sessionId":"abc-123","uuid":"u1","parentUuid":null,"cwd":"C:\\Users\\Sky\\Documents\\TestProject","message":{"content":"Hello, help me with my project"},"isMeta":false}
+{"type":"assistant","timestamp":"2026-03-20T10:01:00Z","sessionId":"abc-123","uuid":"u2","parentUuid":"u1","cwd":"C:\\Users\\Sky\\Documents\\TestProject","message":{"content":[{"type":"text","text":"Sure, I can help!"}]}}
+{"type":"progress","timestamp":"2026-03-20T10:02:00Z","sessionId":"abc-123","uuid":"u3","parentUuid":"u2","cwd":"C:\\Users\\Sky\\Documents\\TestProject"}
+{"type":"file-history-snapshot","timestamp":"2026-03-20T10:03:00Z","sessionId":"abc-123","uuid":"u4","parentUuid":"u3","cwd":"C:\\Users\\Sky\\Documents\\TestProject"}
+{"type":"user","timestamp":"2026-03-20T10:05:00Z","sessionId":"abc-123","uuid":"u5","parentUuid":"u4","cwd":"C:\\Users\\Sky\\Documents\\TestProject","message":{"content":"[{\"tool_use_id\":\"toolu_01\",\"type\":\"tool_result\"}]"},"isMeta":false}
+{"type":"user","timestamp":"2026-03-20T10:10:00Z","sessionId":"abc-123","uuid":"u6","parentUuid":"u5","cwd":"C:\\Users\\Sky\\Documents\\TestProject","message":{"content":"Now refactor the auth module"},"isMeta":false}

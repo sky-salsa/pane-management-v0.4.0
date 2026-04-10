@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-03-20T10:00:00Z","sessionId":"meta-123","uuid":"m1","parentUuid":null,"cwd":"C:\\Users\\Sky\\Documents\\TestProject","message":{"content":"system init"},"isMeta":true}
+{"type":"user","timestamp":"2026-03-20T10:05:00Z","sessionId":"meta-123","uuid":"m2","parentUuid":"m1","cwd":"C:\\Users\\Sky\\Documents\\TestProject","message":{"content":"another meta message"},"isMeta":true}

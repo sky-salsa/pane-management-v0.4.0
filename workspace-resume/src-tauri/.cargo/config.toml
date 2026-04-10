@@ -1,0 +1,10 @@
+# Cargo configuration for workspace-resume
+# The MSVC toolchain (stable-x86_64-pc-windows-msvc) is the default.
+# Build requires Visual Studio Build Tools 2022 with C++ workload.
+#
+# If building from Git Bash, set these environment variables first:
+#   source ../scripts/msvc-env.sh
+# Or use the VS Developer Command Prompt directly.
+
+[build]
+target = "x86_64-pc-windows-msvc"

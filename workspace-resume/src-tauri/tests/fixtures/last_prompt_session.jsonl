@@ -1,0 +1,4 @@
+{"type":"user","timestamp":"2026-03-20T10:00:00Z","sessionId":"abc-123","uuid":"u1","parentUuid":null,"cwd":"C:\\Users\\Sky\\Documents\\TestProject","message":{"content":"Hello, help me with my project"},"isMeta":false}
+{"type":"assistant","timestamp":"2026-03-20T10:01:00Z","sessionId":"abc-123","uuid":"u2","parentUuid":"u1","cwd":"C:\\Users\\Sky\\Documents\\TestProject","message":{"content":[{"type":"text","text":"Sure, I can help!"}]}}
+{"type":"user","timestamp":"2026-03-20T10:10:00Z","sessionId":"abc-123","uuid":"u6","parentUuid":"u5","cwd":"C:\\Users\\Sky\\Documents\\TestProject","message":{"content":"Now refactor the auth module"},"isMeta":false}
+{"type":"last-prompt","lastPrompt":"Now refactor the auth module","sessionId":"abc-123"}

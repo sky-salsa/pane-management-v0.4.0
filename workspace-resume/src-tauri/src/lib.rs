@@ -1,0 +1,105 @@
+use tauri::Manager;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+
+mod commands;
+mod models;
+mod services;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_window_state::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![
+            commands::discovery::list_projects,
+            commands::discovery::list_sessions,
+            commands::discovery::delete_session,
+            commands::discovery::check_continuity_exists,
+            commands::discovery::open_directory,
+            commands::discovery::get_inode,
+            commands::discovery::find_inode_in_tree,
+            commands::discovery::dev_restart, // DEV-ONLY: remove before production
+            commands::launcher::resume_session,
+            commands::launcher::get_active_sessions,
+            commands::launcher::get_terminal_settings,
+            commands::launcher::update_terminal_settings,
+            commands::launcher::get_error_log,
+            commands::launcher::clear_error_log,
+            commands::tmux::list_tmux_sessions,
+            commands::tmux::list_tmux_windows,
+            commands::tmux::list_tmux_panes,
+            commands::tmux::get_tmux_state,
+            commands::tmux::create_pane,
+            commands::tmux::apply_layout,
+            commands::tmux::send_to_pane,
+            commands::tmux::cancel_pane_command,
+            commands::tmux::kill_pane,
+            commands::tmux::create_window,
+            commands::tmux::kill_window,
+            commands::tmux::swap_tmux_pane,
+            commands::tmux::tmux_resurrect_save,
+            commands::tmux::tmux_resurrect_restore,
+            commands::tmux::swap_tmux_window,
+            commands::tmux::switch_tmux_session,
+            commands::tmux::select_tmux_window,
+            commands::tmux::rename_session,
+            commands::tmux::rename_window,
+            commands::tmux::create_session,
+            commands::tmux::kill_session,
+            commands::tmux::setup_pane_grid,
+            commands::tmux::check_pane_statuses,
+            commands::project_meta::get_session_order,
+            commands::project_meta::set_session_order,
+            commands::project_meta::get_pinned_order,
+            commands::project_meta::set_pinned_order,
+            commands::project_meta::get_all_project_meta,
+            commands::project_meta::set_project_tier,
+            commands::project_meta::set_display_name,
+            commands::project_meta::set_session_binding,
+            commands::project_meta::update_project_inode,
+            commands::project_meta::get_pane_presets,
+            commands::project_meta::save_pane_preset,
+            commands::project_meta::delete_pane_preset,
+            commands::project_meta::get_pane_assignments,
+            commands::project_meta::get_pane_assignments_raw,
+            commands::project_meta::set_pane_assignment,
+        ])
+        .setup(|app| {
+            app.manage(commands::launcher::SessionTracker::new());
+
+            // Register Ctrl+Space global hotkey to toggle window visibility
+            let shortcut: Shortcut = "ctrl+space".parse().expect("valid shortcut");
+            let handle = app.handle().clone();
+            app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    if let Some(window) = handle.get_webview_window("main") {
+                        if window.is_minimized().unwrap_or(false) {
+                            let _ = window.unminimize();
+                            let _ = window.set_focus();
+                        } else {
+                            let _ = window.minimize();
+                        }
+                    }
+                }
+            })?;
+
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match services::watcher::start_watcher(app_handle).await {
+                    Ok(watcher) => {
+                        // Keep watcher alive for the app's lifetime.
+                        // std::mem::forget is acceptable for Phase 1;
+                        // a cleaner approach (app.manage with State) in a later phase.
+                        std::mem::forget(watcher);
+                    }
+                    Err(e) => eprintln!("Failed to start file watcher: {}", e),
+                }
+            });
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
